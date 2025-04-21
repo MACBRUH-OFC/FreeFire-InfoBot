@@ -11,13 +11,29 @@ ITEM_DATA_URL = "https://raw.githubusercontent.com/MACBRUH-OFC/FreeFire-Resource
 IMAGE_BASE_URL = "https://raw.githubusercontent.com/MACBRUH-OFC/FreeFire-Resources/main/live/IconCDN/android/"
 
 app = Flask(__name__)
-bot = Bot(BOT_TOKEN)
-dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
-item_data = json.loads(requests.get(ITEM_DATA_URL).text)
+
+def get_bot():
+    bot = Bot(BOT_TOKEN)
+    dispatcher = Dispatcher(bot=bot, update_queue=None, use_context=True)
+    
+    # Handlers inside the function to rebind every time (Vercel-safe)
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    
+    return bot, dispatcher
+
+def load_item_data():
+    try:
+        res = requests.get(ITEM_DATA_URL)
+        return json.loads(res.text)
+    except Exception as e:
+        print("Item data load error:", e)
+        return []
 
 def process_image(url):
     try:
-        img = Image.open(io.BytesIO(requests.get(url, timeout=10).content))
+        res = requests.get(url, timeout=10)
+        img = Image.open(io.BytesIO(res.content))
         if img.mode in ('RGBA', 'LA'):
             bg = Image.new('RGB', img.size, 'black')
             bg.paste(img, mask=img.split()[-1])
@@ -26,7 +42,8 @@ def process_image(url):
         img.save(out, format='PNG')
         out.seek(0)
         return out
-    except:
+    except Exception as e:
+        print("Image error:", e)
         return None
 
 def start(update: Update, context: CallbackContext):
@@ -45,17 +62,16 @@ def is_auth(update: Update):
 def restrict(update: Update, context: CallbackContext):
     context.bot.send_message(chat_id=update.effective_chat.id, text="🚫 ACCESS RESTRICTED\n\nThis bot only works in official group\nJoin @FreeFire_MacbruhUpdates", reply_to_message_id=update.message.message_id)
 
-def handle(update: Update, context: CallbackContext):
+def handle_message(update: Update, context: CallbackContext):
     if not is_auth(update): return restrict(update, context)
     msg = update.message.text.strip()
     if msg.lower().startswith("id ") and len(msg) > 3:
         item_id = msg[3:].strip()
         if item_id.isdigit():
+            item_data = load_item_data()
             item = next((i for i in item_data if i["itemID"] == int(item_id)), None)
-            if item:
-                return send_info(update, context, item)
-            else:
-                return context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Wrong ID/Data Not Found", reply_to_message_id=update.message.message_id)
+            if item: return send_info(update, context, item)
+            context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Wrong ID/Data Not Found", reply_to_message_id=update.message.message_id)
 
 def send_info(update: Update, context: CallbackContext, item):
     try:
@@ -72,14 +88,17 @@ Icon: {item['icon']}
             context.bot.send_photo(chat_id=update.effective_chat.id, photo=img, caption=cap, reply_to_message_id=update.message.message_id)
         else:
             raise Exception("No image")
-    except:
+    except Exception as e:
+        print("Send info error:", e)
         context.bot.send_message(chat_id=update.effective_chat.id, text=cap + "\n⚠️ Image not available", reply_to_message_id=update.message.message_id)
-
-dispatcher.add_handler(CommandHandler("start", start))
-dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle))
 
 @app.route("/api/index", methods=["POST"])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
-    dispatcher.process_update(update)
-    return Response("ok", status=200)
+    try:
+        bot, dispatcher = get_bot()
+        update = Update.de_json(request.get_json(force=True), bot)
+        dispatcher.process_update(update)
+        return Response("ok", status=200)
+    except Exception as e:
+        print("Webhook error:", e)
+        return Response("error", status=500)
